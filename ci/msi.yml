@@ -2,10 +2,114 @@ build-msi:
   stage: build
   image: registry.fedoraproject.org/fedora:44
   variables:
+    # Dependency clone refs, matching build-appimage's.
     SPICE_PROTOCOL_REF: "new_video_codecs"
     SPICE_GTK_REF: "queueu_remove_experiment"
+    # Must match meson.build's wixl_arch; the MSI filename is built from it.
+    MSI_ARCH: "x64"
+    PREFIX: "/usr/x86_64-w64-mingw32/sys-root/mingw"
+    WORK: "/work"
+    VROOT: "/work/vroot"
+    MESON_OPTS: "--cross-file=/usr/share/mingw/toolchain-mingw64.meson"
   script:
-    - ci/build-msi.sh all
+    # The version is read through a pipe below; without pipefail a failure there
+    # would silently build virt-viewer-x64-.msi.
+    - set -o pipefail
+    - mkdir -p "$WORK"
+
+    # Fedora images skip non-English %lang() files; wixl fails on the .mo files
+    # msitools' .wxi groups then cannot find. Must precede the mingw64 installs.
+    - rm -f /etc/rpm/macros.image-language-conf
+
+    - dnf install -y 'dnf-command(builddep)'
+    # Last version shipping the gdk-pixbuf SVG loader that loaders.cache advertises.
+    - dnf install -y mingw64-librsvg2-2.57.1-7.fc44
+    - dnf install -y
+      git meson ninja-build gcc make python3
+      glib2-devel icoutils dos2unix perl-podlators
+      glibc-langpack-en msitools hwdata gtk-update-icon-cache
+    - dnf builddep -y --enablerepo='*-source' mingw64-spice-gtk3
+    # spice-gtk3 is installed though we build over it: spice-gtk3.wxi lists its files.
+    - dnf install -y mingw64-spice-gtk3 mingw64-libxml2 mingw64-gettext
+      mingw64-libjpeg-turbo
+    - dnf install -y
+      mingw64-gstreamer1-plugins-base mingw64-gstreamer1-plugins-good
+      mingw64-gstreamer1-plugins-bad-free
+      mingw64-adwaita-icon-theme mingw64-hicolor-icon-theme
+      mingw64-glib-networking mingw64-filesystem mingw64-libusbx
+      mingw64-readline mingw64-usbredir
+
+    - cd "$WORK"
+    - git clone --depth 1 -b "$SPICE_PROTOCOL_REF"
+      https://gitlab.uni-freiburg.de/opensourcevdi/spice-protocol.git
+    - meson setup $MESON_OPTS --prefix="$PREFIX" spice-protocol/build spice-protocol
+    - ninja -C spice-protocol/build install
+
+    - git clone --depth 1 -b "$SPICE_GTK_REF"
+      https://gitlab.uni-freiburg.de/opensourcevdi/spice-gtk.git
+    - git -C spice-gtk submodule update --init --recursive --depth 1
+    # --depth 1 carries no tags; 0.43 matches the sonames spice-gtk3.wxi hardcodes.
+    - echo 0.43 > spice-gtk/.tarball-version
+    # Fedora ships no mingw64 software decoder, so builtin-mjpeg is the only one.
+    - meson setup $MESON_OPTS --prefix="$PREFIX" spice-gtk/build spice-gtk
+      -Dgtk=enabled
+      -Dbuiltin-mjpeg=true
+      -Dopus=enabled
+      -Dwayland-protocols=disabled
+      -Dintrospection=disabled
+      -Dvapi=disabled
+    - ninja -C spice-gtk/build install
+
+    - rm -rf "$WORK/virt-viewer"
+    - cp -a "$CI_PROJECT_DIR" "$WORK/virt-viewer"
+    - cd "$WORK/virt-viewer"
+    - rm -rf build
+    # The prefix becomes wixl's SourceDir, so it must be the mingw sysroot.
+    - meson setup $MESON_OPTS build
+      --prefix="$PREFIX" --libdir=lib --bindir=bin
+      -Dspice=enabled
+      -Dlibvirt=disabled
+      -Dovirt=disabled
+      -Dvnc=disabled
+      -Dvte=disabled
+      -Dbash_completion=disabled
+    - ninja -C build
+
+    # msitools' prebuilt .wxi groups drift from what Fedora ships; see the script.
+    - bash "$CI_PROJECT_DIR/ci/gen-missing-wxi.sh"
+
+    # msitool.py walks $DESTDIR to build the wixl-heat manifest; install there first.
+    - rm -rf "$VROOT"
+    - DESTDIR="$VROOT" ninja -C build install
+
+    # No package owns these caches, so wixl-heat misses them; gio aborts without
+    # gschemas.compiled. msitool.py walks the vroot, so writing them there is enough.
+    - install -d "$VROOT$PREFIX/share/glib-2.0/schemas"
+    - glib-compile-schemas --targetdir="$VROOT$PREFIX/share/glib-2.0/schemas"
+      "$PREFIX/share/glib-2.0/schemas"
+    # Likewise the SVG loader: loaders.cache lists it, no .wxi group ships it.
+    - install -Dm755
+      "$PREFIX/lib/gdk-pixbuf-2.0/2.10.0/loaders/libpixbufloader-svg.dll"
+      "$VROOT$PREFIX/lib/gdk-pixbuf-2.0/2.10.0/loaders/libpixbufloader-svg.dll"
+    - |
+      for theme in Adwaita hicolor; do
+          d="$PREFIX/share/icons/$theme"
+          [ -f "$d/index.theme" ] || continue
+          gtk-update-icon-cache -qtf "$d" || true
+          [ -f "$d/icon-theme.cache" ] || continue
+          install -Dm644 "$d/icon-theme.cache" "$VROOT$d/icon-theme.cache"
+      done
+
+    # build_by_default:false, so the target has to be named exactly, version and all.
+    - |
+      version=$(meson introspect build --projectinfo |
+                python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])')
+      msi="virt-viewer-$MSI_ARCH-$version.msi"
+      echo "building data/$msi"
+      DESTDIR="$VROOT" ninja -C build "data/$msi"
+      # Hand the artifact back to the checkout so artifacts:paths can collect it.
+      cp "build/data/$msi" "$CI_PROJECT_DIR/"
+      ls -la "$CI_PROJECT_DIR/$msi"
   artifacts:
     paths:
       - virt-viewer-x64-*.msi
