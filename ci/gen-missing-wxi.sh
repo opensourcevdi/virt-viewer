@@ -14,14 +14,34 @@ sources_of() { grep -ho 'Source="$(var.SourceDir)[^"]*"' "$W/$1.wxi" 2>/dev/null
 requires_of() { grep -ho '<?require [^?]*?>' "$W/$1.wxi" 2>/dev/null |
                 sed 's/<?require //; s/?>//; s/\.wxi//' | tr -d ' '; }
 
+# rpm prints "no package provides X" on stdout and exits 1, so gate on its exit
+# status; reading the output would carry that sentence on as a package name.
+resolve_pkg() { local out
+                out=$(rpm -q --whatprovides --queryformat '%{NAME}\n' "$1" 2>/dev/null) || return 1
+                echo "$out" | head -1; }
+
+# Fedora's renames and soname bumps leave the .wxi name behind (libsoup ->
+# libsoup3, SDL2 -> sdl2-compat). Prefer a successor that is already installed:
+# something in the runtime closure pulled it in, so it holds the DLL the other
+# groups actually link against -- installing the old name would ship a dead one.
+provider_for() {
+    local n=$1 pkg
+    resolve_pkg "mingw64-$n" && return 0
+    pkg=$(rpm -qa --queryformat '%{NAME}\n' "mingw64-$n[0-9]*" |
+          grep -Ev -- '-(devel|static|tools)$' | sort | head -1) || true
+    [ -n "$pkg" ] && { echo "$pkg"; return 0; }
+    dnf install -y "mingw64-$n" >/dev/null 2>&1 || return 1
+    resolve_pkg "mingw64-$n"
+}
+
 owner_pkg() {                       # ask rpm about a file the wxi lists that exists
-    local n=$1 f
+    local n=$1 f out
     while read -r f; do
         [ -e "$S$f" ] || continue
-        rpm -qf --queryformat '%{NAME}\n' "$S$f" 2>/dev/null | head -1 && return 0
+        out=$(rpm -qf --queryformat '%{NAME}\n' "$S$f" 2>/dev/null) || continue
+        echo "$out" | head -1; return 0
     done < <(sources_of "$n")
-    rpm -q --whatprovides --queryformat '%{NAME}\n' "mingw64-$n" 2>/dev/null | head -1 ||
-        echo "mingw64-$n"
+    provider_for "$n"               # nothing it lists survives; go by name
 }
 
 is_stale() { local f; while read -r f; do [ -e "$S$f" ] || return 0
@@ -54,17 +74,12 @@ regen() {
 ensure() {                          # generate-if-missing / resync-if-stale
     local n=$1 pkg
     if [ ! -e "$W/$n.wxi" ]; then
-        pkg=$(rpm -q --whatprovides --queryformat '%{NAME}\n' "mingw64-$n" 2>/dev/null | head -1) ||
-            pkg="mingw64-$n"
-        [ -n "$pkg" ] || pkg="mingw64-$n"
-        dnf install -y "$pkg" >/dev/null 2>&1 || {
-            dnf install -y "mingw64-$n" >/dev/null 2>&1 || {
-                echo "!! nothing provides mingw64-$n for missing $n.wxi" >&2; exit 1; }
-            pkg="mingw64-$n"; }
-        pkg=$(rpm -q --whatprovides --queryformat '%{NAME}\n' "$pkg" | head -1)
+        pkg=$(provider_for "$n") ||
+            { echo "!! nothing provides mingw64-$n for missing $n.wxi" >&2; exit 1; }
         regen "$n" "$pkg"; echo "generated $n.wxi from $pkg"
     elif is_stale "$n"; then
-        pkg=$(owner_pkg "$n")
+        pkg=$(owner_pkg "$n") ||
+            { echo "!! nothing provides mingw64-$n to resync $n.wxi" >&2; exit 1; }
         mapfile -t reqs < <(requires_of "$n")
         regen "$n" "$pkg" "${reqs[@]}"
         echo "resynced  $n.wxi from $pkg"
@@ -86,7 +101,7 @@ walk "${roots[@]}"
 
 # A .wxi listing another package's files duplicates them once both groups are
 # referenced, and libmsi rejects the duplicate insert -- resync it from its owner.
-pkg_of_name() { rpm -q --whatprovides --queryformat '%{NAME}\n' "mingw64-$1" 2>/dev/null | head -1; }
+pkg_of_name() { resolve_pkg "mingw64-$1" || true; }
 
 files=(); for n in "${!inclosure[@]}"; do files+=("$W/$n.wxi"); done
 mapfile -t dups < <(grep -h 'Source="$(var.SourceDir)' "${files[@]}" |
