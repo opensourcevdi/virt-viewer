@@ -123,3 +123,13 @@ if with_msi
   )
 
 endif
+
+if host_machine.system() == 'darwin'
+  # The .app bundle's Info.plist. ci/macos.yml copies it out of the build
+  # directory; the wxs above is its Windows counterpart.
+  configure_file(
+    input: 'Info.plist.in',
+    output: 'Info.plist',
+    configuration: conf_data
+  )
+endif

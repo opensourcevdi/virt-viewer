@@ -1,0 +1,31 @@
+#!/bin/bash
+# Contents/MacOS/remote-viewer in the .app bundle; ci/macos.yml installs it here
+# and the real binary alongside as remote-viewer-bin.
+#
+# GTK, GdkPixbuf, GIO and GStreamer resolve module and data directories from
+# paths compiled in at configure time, which a relocatable .app never matches,
+# and GLib has no macOS g_win32_get_package_installation_directory -- so the
+# prefix is recomputed here at startup, as gtk-mac-bundler does. exec preserves
+# the pid, so Launch Services still delivers the kAEGetURL event carrying a
+# clicked spice:// link to this process.
+set -e
+here="$(cd "$(dirname "$0")" && pwd)"
+res="$here/../Resources"
+
+export GSETTINGS_SCHEMA_DIR="$res/share/glib-2.0/schemas"
+export GDK_PIXBUF_MODULE_FILE="$res/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache"
+export GIO_MODULE_DIR="$res/lib/gio/modules"
+export GTK_PATH="$res/lib/gtk-3.0"
+export GTK_IM_MODULE_FILE="$res/lib/gtk-3.0/3.0.0/immodules.cache"
+export GTK_DATA_PREFIX="$res"
+export GTK_EXE_PREFIX="$res"
+export XDG_DATA_DIRS="$res/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
+export GST_PLUGIN_SYSTEM_PATH="$res/lib/gstreamer-1.0"
+# Alongside the main binary: dyld resolves the scanner's own @executable_path
+# against wherever the scanner itself lives.
+export GST_PLUGIN_SCANNER="$here/gst-plugin-scanner"
+# OpenSSL's compiled-in OPENSSLDIR does not exist on a user's Mac. An operator's
+# own override still wins.
+export SSL_CERT_FILE="${SSL_CERT_FILE:-$res/etc/ssl/cert.pem}"
+
+exec "$here/remote-viewer-bin" "$@"

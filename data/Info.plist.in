@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key>              <string>Remote Viewer</string>
+  <key>CFBundleDisplayName</key>       <string>Remote Viewer</string>
+  <key>CFBundleIdentifier</key>        <string>org.virt-manager.remote-viewer</string>
+  <key>CFBundleExecutable</key>        <string>remote-viewer</string>
+  <key>CFBundleIconFile</key>          <string>virt-viewer.icns</string>
+  <key>CFBundleShortVersionString</key><string>@VERSION@</string>
+  <key>CFBundleVersion</key>           <string>@VERSION@</string>
+  <key>CFBundlePackageType</key>       <string>APPL</string>
+  <key>NSHighResolutionCapable</key>   <true/>
+  <key>LSMinimumSystemVersion</key>    <string>11.0</string>
+  <!-- The macOS counterpart of virt-viewer.wxs.in's CUrlProtocols and the
+       .desktop file's x-scheme-handler MimeType entries. Necessary but not
+       sufficient: macOS delivers the URL as a kAEGetURL Apple Event, which
+       src/remote-viewer.c handles. -->
+  <key>CFBundleURLTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleURLName</key>       <string>SPICE connection</string>
+      <key>CFBundleURLSchemes</key>
+      <array>
+        <string>spice</string>
+        <string>spice+tls</string>
+        <string>spice+unix</string>
+      </array>
+    </dict>
+  </array>
+  <key>CFBundleDocumentTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleTypeName</key>      <string>Virt Viewer connection file</string>
+      <key>CFBundleTypeRole</key>      <string>Viewer</string>
+      <key>CFBundleTypeExtensions</key><array><string>vv</string></array>
+    </dict>
+  </array>
+</dict>
+</plist>
