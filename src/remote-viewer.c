@@ -44,6 +44,51 @@
 #include "virt-viewer-file.h"
 #include "virt-viewer-session.h"
 #include "virt-viewer-util.h"
+
+#ifdef __APPLE__
+#include <ApplicationServices/ApplicationServices.h>
+
+/*
+ * A clicked spice:// link arrives as a kAEGetURL Apple Event, not in argv like
+ * the Windows ("%1") and .desktop ("%u") handlers, and nothing in GTK or GIO
+ * picks it up.
+ * kAEGetURL               https://developer.apple.com/documentation/applicationservices/kaegeturl
+ */
+static gchar *osx_launch_uri;
+
+static OSErr
+osx_get_url_handler(const AppleEvent *event, AppleEvent *reply G_GNUC_UNUSED,
+                    SRefCon refcon G_GNUC_UNUSED)
+{
+    char buf[2048];
+    DescType actual_type;
+    Size actual_size;
+    OSErr err;
+
+    err = AEGetParamPtr(event, keyDirectObject, typeUTF8Text, &actual_type,
+                        buf, sizeof(buf) - 1, &actual_size);
+    if (err != noErr)
+        return err;
+
+    buf[actual_size] = '\0';
+    g_free(osx_launch_uri);
+    osx_launch_uri = g_strdup(buf);
+    return noErr;
+}
+
+/* The URL that launched us, or NULL. Bounded: a plain launch pays 2s, once. */
+static gchar *
+osx_wait_for_launch_uri(void)
+{
+    GMainContext *ctx = g_main_context_default();
+    gint64 deadline = g_get_monotonic_time() + 2 * G_TIME_SPAN_SECOND;
+
+    while (osx_launch_uri == NULL && g_get_monotonic_time() < deadline)
+        g_main_context_iteration(ctx, FALSE);
+
+    return g_steal_pointer(&osx_launch_uri);
+}
+#endif /* __APPLE__ */
 #include "remote-viewer.h"
 #include "remote-viewer-connect.h"
 
@@ -53,6 +98,9 @@ struct _RemoteViewer {
     OvirtForeignMenu *ovirt_foreign_menu;
 #endif
     gboolean open_recent_dialog;
+#ifdef __APPLE__
+    gboolean osx_launch_uri_consumed;
+#endif
 };
 
 G_DEFINE_TYPE(RemoteViewer, remote_viewer, VIRT_VIEWER_TYPE_APP)
@@ -145,6 +193,13 @@ remote_viewer_local_command_line (GApplication   *gapp,
 
     if (!opt_args) {
         self->open_recent_dialog = TRUE;
+#ifdef __APPLE__
+        /* Installed before the main loop starts, or the event is dropped.
+         * AEInstallEventHandler   https://developer.apple.com/documentation/coreservices/1448596-aeinstalleventhandler 
+         */
+        AEInstallEventHandler(kInternetEventClass, kAEGetURL,
+                              NewAEEventHandlerUPP(osx_get_url_handler), 0, false);
+#endif
     } else {
         if (g_strv_length(opt_args) > 1) {
             g_printerr(_("\nError: can't handle multiple URIs\n\n"));
@@ -747,6 +802,23 @@ remote_viewer_start(VirtViewerApp *app, GError **err)
 
 retry_dialog:
     {
+#ifdef __APPLE__
+        /* Apple Events only dispatch once the main loop runs, so the URL
+         * cannot be collected in local_command_line. First pass only: a
+         * reconnect must not re-wait. */
+        if (self->open_recent_dialog && !self->osx_launch_uri_consumed) {
+            gchar *launch_uri;
+
+            self->osx_launch_uri_consumed = TRUE;
+            launch_uri = osx_wait_for_launch_uri();
+            if (launch_uri != NULL) {
+                g_debug("Opening display from spice:// link: %s", launch_uri);
+                g_object_set(app, "guri", launch_uri, NULL);
+                self->open_recent_dialog = FALSE;
+                g_free(launch_uri);
+            }
+        }
+#endif
         if (self->open_recent_dialog) {
             VirtViewerWindow *main_window = virt_viewer_app_get_main_window(app);
             if (!remote_viewer_connect_dialog(virt_viewer_window_get_window(main_window), &guri)) {

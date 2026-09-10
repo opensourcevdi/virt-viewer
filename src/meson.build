@@ -122,6 +122,12 @@ remote_viewer_sources = [
 
 remote_viewer_deps = common_deps
 
+# AEInstallEventHandler, for the spice:// Apple Event handler in remote-viewer.c.
+remote_viewer_link_args = []
+if host_machine.system() == 'darwin'
+  remote_viewer_link_args += ['-framework', 'ApplicationServices']
+endif
+
 gui_security_link_args = []
 cui_security_link_args = []
 if host_machine.system() == 'windows'
@@ -166,7 +172,7 @@ executable(
   remote_viewer_sources,
   dependencies: remote_viewer_deps,
   link_with: common_lib,
-  link_args: gui_security_link_args,
+  link_args: gui_security_link_args + remote_viewer_link_args,
   include_directories: top_include_dir,
   install: true,
   win_subsystem: 'windows',
