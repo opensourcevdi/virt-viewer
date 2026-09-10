@@ -37,3 +37,14 @@ if host_machine.system() == 'windows'
     input : infiles,
     command : [icotool, '-c', '-o', '@OUTPUT@', '@INPUT@'])
 endif
+
+if host_machine.system() == 'darwin'
+  # The macOS counterpart of the .ico above; ci/macos.yml copies it into the
+  # .app. Nothing links against it, hence build_by_default.
+  icnsfile = custom_target(
+    'virt-viewer.icns',
+    output : 'virt-viewer.icns',
+    input : join_paths('scalable', 'virt-viewer.svg'),
+    command : [python3, make_icns_prog.full_path(), '@INPUT@', '@OUTPUT@'],
+    build_by_default : true)
+endif

@@ -4,6 +4,7 @@ scripts = [
     'dist.py',
     'gen-authors.py',
     'license-to-rtf.py',
+    'make-icns.py',
     'msitool.py',
     'post_install.py',
     'run-windres.py',
