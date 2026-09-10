@@ -18,8 +18,7 @@
 
   <?if $(var.HaveSpiceGtk) = "True"?>
     <?require spice-gtk3.wxi?>
-    <!-- spice-glib.wxi pulls in core gstreamer1 only: no playback plugins, no
-         D3D11/D3D12 decoders. -->
+    <!-- spice-glib.wxi carries core gstreamer1 only. -->
     <?require gstreamer1-plugins-base.wxi?>
     <?require gstreamer1-plugins-good.wxi?>
     <?require gstreamer1-plugins-bad-free.wxi?>
@@ -37,7 +36,7 @@
   <?endif?>
   <?require libxml2.wxi?>
 
-  <!-- wixl-heat hashes the install path into the file id; this one is remote-viewer.exe. -->
+  <!-- wixl-heat file id of remote-viewer.exe. -->
   <?define RemoteViewerExe = "fil610DF9E49759B1DEC646290195F96F8A"?>
 
   <?define UpgradeCode = "5B027138-1A63-49E6-877E-055E5EEC1903"?>
@@ -51,11 +50,10 @@
     <Package InstallerVersion="200" Compressed="yes" Comments="comments" InstallScope="perMachine"/>
     <Media Id="1" Cabinet="cabinet.cab" EmbedCab="yes"/>
 
-    <!-- The only dialog chain wixl ships; no install-directory page among them. -->
     <UIRef Id="WixUI_Minimal"/>
 
     <Property Id="ARPHELPLINK" Value="https://www.virt-manager.org"/>
-    <!-- ARPNOMODIFY omitted: WixUI_Minimal sets it, and a duplicate row fails wixl. -->
+    <!-- No ARPNOMODIFY: WixUI_Minimal sets it and a duplicate fails wixl. -->
     <Property Id="ARPNOREPAIR" Value="1"/>
     <Property Id="ARPPRODUCTICON" Value="virt-viewer.ico"/>
     <Property Id="ARPURLINFOABOUT" Value="https://www.virt-manager.org"/>
@@ -75,7 +73,7 @@
         </ProgId>
       </Component>
 
-      <!-- Keep in step with the MimeType= list in data/remote-viewer.desktop.in. -->
+      <!-- Same schemes as MimeType= in remote-viewer.desktop.in. -->
       <Component Id="CUrlProtocols" Guid="C7684E7B-EA6B-4CC1-8B83-E72D0FCDC578">
         <RegistryValue Root="HKCR" Key="spice" Value="URL:SPICE Protocol" Type="string" KeyPath="yes"/>
         <RegistryValue Root="HKCR" Key="spice" Name="URL Protocol" Value="" Type="string"/>
@@ -131,7 +129,6 @@
     </DirectoryRef>
 
     <DirectoryRef Id="DesktopFolder">
-      <!-- No RemoveFolder: the desktop is not ours to delete. -->
       <Component Id="CDesktopShortcut" Guid="741A1C48-D5D0-487D-8473-18C693CE6729">
         <Shortcut Id="ApplicationDesktopShortcut"
                   Name="Remote viewer"

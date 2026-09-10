@@ -2,10 +2,8 @@ build-msi:
   stage: build
   image: registry.fedoraproject.org/fedora:44
   variables:
-    # Dependency clone refs, matching build-appimage's.
     SPICE_PROTOCOL_REF: "new_video_codecs"
-    SPICE_GTK_REF: "queueu_remove_experiment"
-    # Must match meson.build's wixl_arch; the MSI filename is built from it.
+    SPICE_GTK_REF: "windows-crypt32-ca-store" # Change to queueu_remove_experiment when merged
     MSI_ARCH: "x64"
     PREFIX: "/usr/x86_64-w64-mingw32/sys-root/mingw"
     WORK: "/work"
