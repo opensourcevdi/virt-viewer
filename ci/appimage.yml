@@ -1,5 +1,6 @@
 include:
   - local: ci/msi.yml
+  - local: ci/macos.yml
 
 build-appimage:
   stage: build

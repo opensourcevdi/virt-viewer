@@ -1,0 +1,235 @@
+build-dmg:
+  stage: build
+  # No macOS runner is tagged yet, so this never blocks a pipeline. The runner
+  # needs Homebrew and the Xcode command line tools; the job installs the rest.
+  when: manual
+  tags:
+    - macos
+  variables:
+    SPICE_PROTOCOL_REF: "new_video_codecs"
+    SPICE_GTK_REF: "macos-build" # Change to queueu_remove_experiment when merged
+    PREFIX: "$CI_PROJECT_DIR/../vv-prefix"
+    WORK: "$CI_PROJECT_DIR/../vv-src"
+  script:
+    # The version is read through a pipe below; without pipefail a failure there
+    # would silently build virt-viewer-arm64-.dmg.
+    - set -o pipefail
+    - export BREW="$(brew --prefix)"
+    - export STAGE="$WORK/stage"
+    - export APP="$STAGE/Remote Viewer.app"
+    - export RES="$APP/Contents/Resources"
+    - export FRW="$APP/Contents/Frameworks"
+    # Ordered to put the fork ahead of Homebrew's spice-gtk.
+    - export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:$PREFIX/share/pkgconfig:$BREW/lib/pkgconfig:$BREW/share/pkgconfig"
+    # g-ir-scanner and vapigen resolve their inputs through XDG_DATA_DIRS; without
+    # $BREW/share spice-gtk fails its typelib and vapi targets.
+    - export XDG_DATA_DIRS="$BREW/share:/usr/local/share:/usr/share"
+    - mkdir -p "$WORK"
+
+    # The closure ONLY: installing spice-gtk would shadow the fork with an older
+    # libspice-client-glib.
+    - brew install --only-dependencies spice-gtk
+    # vala: vapigen. intltool: po/. librsvg: rsvg-convert for the .icns.
+    # gst-libav: avdec_*, the software fallback when VideoToolbox declines a stream.
+    - brew install gtk+3
+      gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad gst-libav
+      meson ninja pkgconf gettext vala intltool librsvg dylibbundler
+
+    - cd "$WORK"
+    - rm -rf spice-protocol
+    - git clone --depth 1 -b "$SPICE_PROTOCOL_REF"
+      https://gitlab.uni-freiburg.de/opensourcevdi/spice-protocol.git
+    - meson setup --prefix="$PREFIX" spice-protocol/build spice-protocol
+    - ninja -C spice-protocol/build install
+
+    - rm -rf spice-gtk
+    # Not --depth 1: the merge-base assert below needs history to resolve 1511f0ad.
+    - git clone -b "$SPICE_GTK_REF" --recurse-submodules
+      https://gitlab.uni-freiburg.de/opensourcevdi/spice-gtk.git
+    # Apple ld has no --version-script; upstream fixed this in 1511f0ad. Assert the
+    # base carries it rather than carrying a patch that would silently rot.
+    - git -C spice-gtk merge-base --is-ancestor
+      1511f0ad5ea67b4657540c631e3a8c959bb8d578 HEAD
+    - meson setup --prefix="$PREFIX" spice-gtk/build spice-gtk
+      -Dgtk=enabled
+      -Dbuiltin-mjpeg=true
+    - ninja -C spice-gtk/build install
+
+    - cd "$CI_PROJECT_DIR"
+    - rm -rf build
+    - meson setup build --prefix="$PREFIX"
+      -Dspice=enabled
+      -Dlibvirt=disabled
+      -Dovirt=disabled
+      -Dvnc=disabled
+      -Dvte=disabled
+      -Dbash_completion=disabled
+    - ninja -C build
+    - |
+      VERSION=$(meson introspect build --projectinfo |
+                python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])')
+      export VERSION
+      echo "virt-viewer $VERSION"
+
+    - rm -rf "$STAGE"
+    - install -d "$APP/Contents/MacOS" "$RES" "$FRW"
+    - DESTDIR="$STAGE/root" ninja -C build install
+    - install -m755 "$STAGE/root$PREFIX/bin/remote-viewer"
+      "$APP/Contents/MacOS/remote-viewer-bin"
+
+    # Runtime-loaded modules are dlopen()ed by path, so no dependency walker sees
+    # them and they are enumerated by hand. gschemas.compiled is the fatal one:
+    # GTK3 and gio g_error() on a miss -- abort, no window, no message.
+    - install -d "$RES/share/glib-2.0/schemas"
+    - glib-compile-schemas --targetdir="$RES/share/glib-2.0/schemas"
+      "$BREW/share/glib-2.0/schemas"
+    # Without these GTK cannot decode its own PNG icons.
+    - install -d "$RES/lib/gdk-pixbuf-2.0/2.10.0/loaders"
+    - cp "$BREW/lib/gdk-pixbuf-2.0/2.10.0/loaders"/*.so
+      "$RES/lib/gdk-pixbuf-2.0/2.10.0/loaders/"
+    # libgiognutls. spice+tls links OpenSSL directly and does not use it, but its
+    # absence turns any GTls user into "TLS support is not available".
+    - install -d "$RES/lib/gio/modules"
+    - cp "$BREW/lib/gio/modules"/*.so "$RES/lib/gio/modules/"
+    # im-quartz routes macOS input-method events (dead keys, CJK) into GTK entries.
+    - install -d "$RES/lib/gtk-3.0/3.0.0/immodules"
+    - cp "$BREW/lib/gtk-3.0/3.0.0/immodules"/*.so "$RES/lib/gtk-3.0/3.0.0/immodules/"
+
+    # Homebrew ships 275 plugins; this list is every element a live SPICE session
+    # instantiated, plus decoders for codecs the fork offers that server did not
+    # pick. Elements, not filenames: GStreamer moves them between plugins across
+    # releases (videoconvert into libgstvideoconvertscale in 1.24).
+    - |
+      install -d "$RES/lib/gstreamer-1.0"
+      elements=(
+          appsrc typefind parsebin h264parse deinterlace videoconvert videoscale
+          videobalance capsfilter appsink queue multiqueue identity fakesink
+          playbin3 decodebin3 uridecodebin3 urisourcebin
+          audioconvert audioresample autoaudiosink autoaudiosrc
+          osxaudiosink osxaudiosrc
+          vtdec_hw
+          h265parse vp8dec vp9dec av1dec jpegdec
+          avdec_h264 avdec_h265
+      )
+      seen=()
+      for e in "${elements[@]}"; do
+          # No `exit` or `head`: either SIGPIPEs gst-inspect-1.0, which pipefail
+          # then propagates out of the substitution and set -e turns fatal.
+          f=$(DYLD_LIBRARY_PATH="$PREFIX/lib" gst-inspect-1.0 "$e" 2>/dev/null |
+              awk '/^  Filename/{print $2}' || true)
+          [ -n "$f" ] || { echo "warning: no plugin provides '$e'" >&2; continue; }
+          case " ${seen[*]-} " in *" $f "*) continue ;; esac
+          seen+=("$f")
+          install -m644 "$f" "$RES/lib/gstreamer-1.0/"
+      done
+    # Contents/MacOS, not libexec/: dyld resolves this separate executable's own
+    # @executable_path against its own directory. Elsewhere GStreamer silently
+    # scans in-process, which is how a broken path would ship unnoticed.
+    - find "$BREW/Cellar/gstreamer" -name gst-plugin-scanner
+      -exec install -m755 {} "$APP/Contents/MacOS/" \; -quit
+    - test -x "$APP/Contents/MacOS/gst-plugin-scanner"
+
+    # OpenSSL's compiled-in OPENSSLDIR is Homebrew's Cellar, which does not exist
+    # on a user's Mac; without a bundled store every spice+tls:// fails to verify.
+    - install -d "$RES/etc/ssl"
+    - install -m644 "$BREW/etc/openssl@3/cert.pem" "$RES/etc/ssl/cert.pem"
+
+    # cp -L: Homebrew's index.theme is a Cellar symlink, and a link resolving
+    # outside the bundle makes codesign refuse to seal it. Take nothing else from
+    # hicolor -- it is a symlink farm that also clobbers our own icon.
+    - cp -R "$STAGE/root$PREFIX/share/icons" "$RES/share/"
+    - cp -L "$BREW/share/icons/hicolor/index.theme" "$RES/share/icons/hicolor/"
+    - gtk-update-icon-cache -qtf "$RES/share/icons/hicolor"
+    - if [ -d "$STAGE/root$PREFIX/share/locale" ]; then cp -R
+      "$STAGE/root$PREFIX/share/locale" "$RES/share/"; fi
+
+    # Built by icons/meson.build, as the Windows .ico is.
+    - cp build/icons/virt-viewer.icns "$RES/virt-viewer.icns"
+
+    # Info.plist is configured by data/meson.build from data/Info.plist.in,
+    # the way virt-viewer.wxs.in is on Windows.
+    - cp build/data/Info.plist "$APP/Contents/Info.plist"
+
+    # Static file; the rationale for it is in its own header.
+    - install -m755 data/remote-viewer-launcher "$APP/Contents/MacOS/remote-viewer"
+
+    # Before dylibbundler: these tools dlopen every module, which only works while
+    # the modules still carry install names resolvable on this machine. Capability
+    # data does not depend on install names, so recording first and rewriting
+    # paths after is the only ordering that works.
+    - |
+      pbcache="$RES/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache"
+      imcache="$RES/lib/gtk-3.0/3.0.0/immodules.cache"
+      GDK_PIXBUF_MODULEDIR="$RES/lib/gdk-pixbuf-2.0/2.10.0/loaders" \
+          gdk-pixbuf-query-loaders > "$pbcache"
+      gtk-query-immodules-3.0 "$RES/lib/gtk-3.0/3.0.0/immodules"/*.so > "$imcache"
+      # gio's cache stores bare basenames, so it alone needs no path rewriting.
+      gio-querymodules "$RES/lib/gio/modules"
+      # dyld expands @executable_path inside a dlopen() argument, which is how
+      # these survive the user dragging the app out of the disk image.
+      sed -i '' "s|$RES/|@executable_path/../Resources/|g" "$pbcache" "$imcache"
+      # An empty cache is silent at runtime -- GTK renders nothing and carries on.
+      n=$(grep -c '^"@executable_path' "$pbcache" || true)
+      [ "$n" -ge 5 ] || { echo "gdk-pixbuf cache has only $n loaders" >&2; exit 1; }
+      m=$(grep -c '^"@executable_path' "$imcache" || true)
+      [ "$m" -ge 5 ] || { echo "GTK immodule cache has only $m modules" >&2; exit 1; }
+      grep -q . "$RES/lib/gio/modules/giomodule.cache"
+      echo "caches: $n pixbuf loaders, $m immodules"
+
+    # dylibbundler walks the link closure only, hence every module above being
+    # copied in first. gst-plugin-scanner is named explicitly: it is the one
+    # bundled Mach-O with no .so/.dylib suffix for the find to match.
+    - |
+      fix=(-x "$APP/Contents/MacOS/remote-viewer-bin"
+           -x "$APP/Contents/MacOS/gst-plugin-scanner")
+      while IFS= read -r -d '' f; do fix+=(-x "$f"); done < <(
+          find "$RES/lib" -type f \( -name '*.so' -o -name '*.dylib' \) -print0)
+      dylibbundler -of -cd -b -d "$FRW" -p '@executable_path/../Frameworks' \
+          -s "$PREFIX/lib" -s "$BREW/lib" "${fix[@]}"
+
+      # dylibbundler rewrites each existing LC_RPATH to its -p value instead of
+      # collapsing them, so a library that had two ends up with the same path
+      # twice and dyld refuses it: "duplicate LC_RPATH".
+      rp='@executable_path/../Frameworks/'
+      for f in "$APP/Contents/MacOS/remote-viewer-bin" \
+               "$APP/Contents/MacOS/gst-plugin-scanner" "${fix[@]:2}"; do
+          [ -n "$f" ] && [ "$f" != "-x" ] || continue
+          while install_name_tool -delete_rpath "$rp" "$f" 2>/dev/null; do :; done
+          install_name_tool -add_rpath "$rp" "$f" 2>/dev/null || true
+      done
+
+    # install_name_tool invalidates signatures, and Apple silicon dyld SIGKILLs a
+    # binary whose signature does not verify -- dead before main(), exit 137, no
+    # diagnostic. The rpath pass above runs after dylibbundler's own signing, so
+    # re-sign everything. Ad-hoc (-s -) runs locally but Gatekeeper rejects a
+    # downloaded .dmg; set CODESIGN_ID to a Developer ID identity to ship one.
+    - |
+      # codesign reports a link resolving outside the .app only as ENOENT.
+      dangling=$(find "$APP" -type l ! -exec test -e {} \; -print)
+      [ -z "$dangling" ] || { echo "dangling symlinks:" >&2
+                              echo "$dangling" >&2; exit 1; }
+      id="${CODESIGN_ID:--}"
+      opts=(--force --sign "$id")
+      # Hardened runtime is required for notarisation and rejected for ad-hoc. An
+      # if, not `[ ] &&`: the latter aborts under set -e whenever the test fails.
+      if [ "$id" != "-" ]; then opts+=(--timestamp --options runtime); fi
+      find "$APP/Contents" -type f \
+           \( -name '*.dylib' -o -name '*.so' -o -name 'remote-viewer-bin' \
+              -o -name 'gst-plugin-scanner' \) -print0 |
+          xargs -0 codesign "${opts[@]}"
+      codesign "${opts[@]}" "$APP"
+      codesign --verify --deep --strict "$APP"
+
+    - rm -rf "$STAGE/root"
+    # UDZO is the compressed read-only format every Mac can mount. A styled DMG
+    # needs create-dmg and buys nothing functional, so the drag target is a symlink.
+    - |
+      dmg="virt-viewer-$(uname -m)-$VERSION.dmg"
+      ln -sfn /Applications "$STAGE/Applications"
+      rm -f "$CI_PROJECT_DIR/$dmg"
+      hdiutil create -volname "Remote Viewer $VERSION" -srcfolder "$STAGE" \
+          -ov -format UDZO "$CI_PROJECT_DIR/$dmg"
+      ls -la "$CI_PROJECT_DIR/$dmg"
+  artifacts:
+    paths:
+      - virt-viewer-*.dmg
