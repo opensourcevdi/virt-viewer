@@ -85,6 +85,10 @@ jobs:
             gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad gst-libav \
             meson ninja pkgconf gettext vala intltool librsvg dylibbundler
 
+          # spice-common's codegen imports six and pyparsing, and Homebrew's Python
+          # is externally managed (PEP 668), so pip needs the override.
+          python3 -m pip install --break-system-packages six pyparsing
+
           cd "$WORK"
           rm -rf spice-protocol
           git clone --depth 1 -b "$SPICE_PROTOCOL_REF" \
