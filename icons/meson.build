@@ -39,7 +39,7 @@ if host_machine.system() == 'windows'
 endif
 
 if host_machine.system() == 'darwin'
-  # The macOS counterpart of the .ico above; ci/macos.yml copies it into the
+  # The macOS counterpart of the .ico above; .github/workflows/macos.yml copies it into the
   # .app. Nothing links against it, hence build_by_default.
   icnsfile = custom_target(
     'virt-viewer.icns',

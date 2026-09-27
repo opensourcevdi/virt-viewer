@@ -1,5 +1,5 @@
 #!/bin/bash
-# Contents/MacOS/remote-viewer in the .app bundle; ci/macos.yml installs it here
+# Contents/MacOS/remote-viewer in the .app bundle; .github/workflows/macos.yml installs it here
 # and the real binary alongside as remote-viewer-bin.
 #
 # GTK, GdkPixbuf, GIO and GStreamer resolve module and data directories from
