@@ -18,8 +18,46 @@ jobs:
       SPICE_GTK_REF: "macos-build" # Change to queueu_remove_experiment when merged
       PREFIX: "${{ github.workspace }}/../vv-prefix"
       WORK: "${{ github.workspace }}/../vv-src"
+      # Signing, all repo secrets. Leave MACOS_CERT_P12 unset and the build
+      # falls back to ad-hoc: runs, but Gatekeeper blocks a downloaded copy.
+      #   MACOS_CERT_P12       base64 of the "Developer ID Application" .p12
+      #   MACOS_CERT_PASSWORD  the .p12's export password
+      #   CODESIGN_ID          optional; defaults to the identity in the .p12
+      # Notarisation, skipped unless all three are set (and the cert is):
+      #   NOTARY_APPLE_ID      Apple ID email of the developer account
+      #   NOTARY_TEAM_ID       10-character team ID
+      #   NOTARY_PASSWORD      app-specific password from appleid.apple.com
+      MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+      MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+      CODESIGN_ID: ${{ secrets.CODESIGN_ID }}
+      NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+      NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
+      NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
+
+      # A throwaway keychain, so the runner's login keychain never holds the key.
+      - name: import signing certificate
+        if: env.MACOS_CERT_P12 != ''
+        run: |
+          kc="$RUNNER_TEMP/signing.keychain-db"
+          pw=$(uuidgen)
+          security create-keychain -p "$pw" "$kc"
+          security set-keychain-settings -lut 21600 "$kc"
+          security unlock-keychain -p "$pw" "$kc"
+          echo "$MACOS_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$kc" \
+              -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/cert.p12"
+          # Without this codesign stalls on a GUI access prompt nobody can click.
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$pw" "$kc"
+          security list-keychains -d user -s "$kc" login.keychain-db
+          if [ -z "$CODESIGN_ID" ]; then
+              id=$(security find-identity -v -p codesigning "$kc" |
+                   awk -F'"' 'NR==1{print $2}')
+              [ -n "$id" ] || { echo "no signing identity in the .p12" >&2; exit 1; }
+              echo "CODESIGN_ID=$id" >> "$GITHUB_ENV"
+          fi
 
       - name: build
         run: |
@@ -211,9 +249,8 @@ jobs:
           # install_name_tool invalidates signatures, and Apple silicon dyld
           # SIGKILLs a binary whose signature does not verify -- dead before
           # main(), exit 137, no diagnostic. The rpath pass above runs after
-          # dylibbundler's own signing, so re-sign everything. Ad-hoc (-s -) runs
-          # locally but Gatekeeper rejects a downloaded .dmg; set CODESIGN_ID to a
-          # Developer ID identity to ship one.
+          # dylibbundler's own signing, so re-sign everything. CODESIGN_ID comes
+          # from the import step; unset, it falls back to ad-hoc (-s -).
           #
           # codesign reports a link resolving outside the .app only as ENOENT.
           dangling=$(find "$APP" -type l ! -exec test -e {} \; -print)
@@ -240,6 +277,19 @@ jobs:
           rm -f "$GITHUB_WORKSPACE/$dmg"
           hdiutil create -volname "Remote Viewer $VERSION" -srcfolder "$STAGE" \
               -ov -format UDZO "$GITHUB_WORKSPACE/$dmg"
+
+          # Notarising the .dmg covers the .app inside it; stapling lets
+          # Gatekeeper accept it offline. Ad-hoc builds cannot be notarised.
+          if [ "$id" != "-" ] && [ -n "$NOTARY_APPLE_ID" ] &&
+             [ -n "$NOTARY_TEAM_ID" ] && [ -n "$NOTARY_PASSWORD" ]; then
+              codesign --force --sign "$id" --timestamp "$GITHUB_WORKSPACE/$dmg"
+              xcrun notarytool submit "$GITHUB_WORKSPACE/$dmg" --wait \
+                  --apple-id "$NOTARY_APPLE_ID" --team-id "$NOTARY_TEAM_ID" \
+                  --password "$NOTARY_PASSWORD"
+              xcrun stapler staple "$GITHUB_WORKSPACE/$dmg"
+          else
+              echo "::warning::not notarised; Gatekeeper will block the download"
+          fi
           ls -la "$GITHUB_WORKSPACE/$dmg"
 
       - uses: actions/upload-artifact@v4
