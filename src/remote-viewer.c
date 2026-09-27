@@ -70,6 +70,9 @@ osx_get_url_handler(const AppleEvent *event, AppleEvent *reply G_GNUC_UNUSED,
     if (err != noErr)
         return err;
 
+    /* actual_size is the full length even when the copy was truncated. */
+    if (actual_size >= (Size)sizeof(buf))
+        return errAECoercionFail;
     buf[actual_size] = '\0';
     g_free(osx_launch_uri);
     osx_launch_uri = g_strdup(buf);
