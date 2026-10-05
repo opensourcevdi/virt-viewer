@@ -24,8 +24,7 @@ export GST_PLUGIN_SYSTEM_PATH="$res/lib/gstreamer-1.0"
 # Alongside the main binary: dyld resolves the scanner's own @executable_path
 # against wherever the scanner itself lives.
 export GST_PLUGIN_SCANNER="$here/gst-plugin-scanner"
-# OpenSSL's compiled-in OPENSSLDIR does not exist on a user's Mac. An operator's
-# own override still wins.
-export SSL_CERT_FILE="${SSL_CERT_FILE:-$res/etc/ssl/cert.pem}"
+# No SSL_CERT_FILE: spice-gtk reads the Keychain, and a bundled file would
+# re-trust any root the user distrusted there. An operator's own still applies.
 
 exec "$here/remote-viewer-bin" "$@"

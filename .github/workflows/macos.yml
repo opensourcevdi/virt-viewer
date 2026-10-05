@@ -15,7 +15,7 @@ jobs:
     runs-on: macos-14
     env:
       SPICE_PROTOCOL_REF: "new_video_codecs"
-      SPICE_GTK_REF: "macos-build" # Change to queueu_remove_experiment when merged
+      SPICE_GTK_REF: "native-ca-store" # Change to queueu_remove_experiment when merged
       PREFIX: "${{ github.workspace }}/../vv-prefix"
       WORK: "${{ github.workspace }}/../vv-src"
       # Signing, all repo secrets. Leave MACOS_CERT_P12 unset and the build
@@ -181,11 +181,6 @@ jobs:
           find "$BREW/Cellar/gstreamer" -name gst-plugin-scanner \
             -exec install -m755 {} "$APP/Contents/MacOS/" \; -quit
           test -x "$APP/Contents/MacOS/gst-plugin-scanner"
-
-          # OpenSSL's compiled-in OPENSSLDIR is Homebrew's Cellar, which does not
-          # exist on a user's Mac; without a bundled store spice+tls:// fails.
-          install -d "$RES/etc/ssl"
-          install -m644 "$BREW/etc/openssl@3/cert.pem" "$RES/etc/ssl/cert.pem"
 
           # cp -L: Homebrew's index.theme is a Cellar symlink, and a link resolving
           # outside the bundle makes codesign refuse to seal it. Take nothing else
