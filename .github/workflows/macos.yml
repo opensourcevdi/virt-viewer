@@ -334,5 +334,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           ls -la virt-viewer-*.dmg
+          pre=()
+          case "$GITHUB_REF_NAME" in *-*) pre=(--prerelease) ;; esac
           gh release create "$GITHUB_REF_NAME" virt-viewer-*.dmg \
-              --repo "$GITHUB_REPOSITORY" --generate-notes
+              --repo "$GITHUB_REPOSITORY" --generate-notes "${pre[@]}"
