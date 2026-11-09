@@ -1,7 +1,7 @@
 name: build-dmg
 
-# Builds the macOS DMG. A v* tag publishes it as a GitHub release; a manual run
-# only uploads the artifact. Not on every push: macOS minutes bill at 10x.
+# Builds the arm64 and x86_64 DMGs. A v* tag publishes them as a GitHub release;
+# a manual run only uploads the artifacts. Not on every push: macOS minutes bill at 10x.
 on:
   push:
     tags: ["v*"]
@@ -12,7 +12,17 @@ permissions:
 
 jobs:
   build-dmg:
-    runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-14
+          # Homebrew Intel is Tier 3: formulae without a bottle build from source.
+          - arch: x86_64
+            runner: macos-15-intel
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 300
     env:
       SPICE_PROTOCOL_REF: "new_video_codecs"
       SPICE_GTK_REF: "native-ca-store" # Change to queueu_remove_experiment when merged
@@ -62,8 +72,10 @@ jobs:
       - name: build
         run: |
           # The version is read through a pipe below; without pipefail a failure
-          # there would silently build virt-viewer-arm64-.dmg.
+          # there would silently build virt-viewer-<arch>-.dmg.
           set -o pipefail
+          [ "$(uname -m)" = "${{ matrix.arch }}" ] ||
+              { echo "runner is $(uname -m), expected ${{ matrix.arch }}" >&2; exit 1; }
           export BREW="$(brew --prefix)"
           export STAGE="$WORK/stage"
           export APP="$STAGE/Remote Viewer.app"
@@ -245,6 +257,18 @@ jobs:
               install_name_tool -add_rpath "$rp" "$f" 2>/dev/null || true
           done
 
+          # Bottles target the runner's macOS, not Info.plist.in's 11.0.
+          minos=$(find "$APP/Contents" -type f \
+                      \( -name '*.dylib' -o -name '*.so' -o -name 'remote-viewer-bin' \
+                         -o -name 'gst-plugin-scanner' \) -exec otool -l {} + |
+                  awk '/LC_BUILD_VERSION/{b=1} b&&$1=="minos"{print $2; b=0}
+                       /LC_VERSION_MIN_MACOSX/{v=1} v&&$1=="version"{print $2; v=0}' |
+                  sort -t. -k1,1n -k2,2n | tail -n1)
+          [ -n "$minos" ] || { echo "no minos found in the bundle" >&2; exit 1; }
+          plutil -replace LSMinimumSystemVersion -string "$minos" "$APP/Contents/Info.plist"
+          echo "LSMinimumSystemVersion=$minos"
+          echo "::notice::${{ matrix.arch }} DMG requires macOS $minos or later"
+
           # install_name_tool invalidates signatures, and Apple silicon dyld
           # SIGKILLs a binary whose signature does not verify -- dead before
           # main(), exit 137, no diagnostic. The rpath pass above runs after
@@ -271,7 +295,7 @@ jobs:
           # UDZO is the compressed read-only format every Mac can mount. A styled
           # DMG needs create-dmg and buys nothing functional, so the drag target
           # is a symlink.
-          dmg="virt-viewer-$(uname -m)-$VERSION.dmg"
+          dmg="virt-viewer-${{ matrix.arch }}-$VERSION.dmg"
           ln -sfn /Applications "$STAGE/Applications"
           rm -f "$GITHUB_WORKSPACE/$dmg"
           hdiutil create -volname "Remote Viewer $VERSION" -srcfolder "$STAGE" \
@@ -293,11 +317,22 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: dmg
+          name: dmg-${{ matrix.arch }}
           path: virt-viewer-*.dmg
 
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build-dmg
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dmg-*
+          merge-multiple: true
       - name: release
-        if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" virt-viewer-*.dmg --generate-notes
+        run: |
+          ls -la virt-viewer-*.dmg
+          gh release create "$GITHUB_REF_NAME" virt-viewer-*.dmg \
+              --repo "$GITHUB_REPOSITORY" --generate-notes
