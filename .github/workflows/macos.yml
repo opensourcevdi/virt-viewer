@@ -17,7 +17,7 @@ jobs:
       matrix:
         include:
           - arch: arm64
-            runner: macos-14
+            runner: macos-15
           # Homebrew Intel is Tier 3: formulae without a bottle build from source.
           - arch: x86_64
             runner: macos-15-intel
